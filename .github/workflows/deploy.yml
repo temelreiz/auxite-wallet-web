@@ -20,28 +20,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+
+      - name: Setup Node 20.19.0
+        uses: actions/setup-node@v4
         with:
           node-version: "20.19.0"
-      - run: npm ci
-      - run: npm run build   # next build && next export -o out
+          cache: "npm"
+
+      - name: Show versions
+        run: |
+          node -v
+          npm -v
+
+      - name: Install deps (CI)
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
       - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_INFRA_ROLE_ARN }}
           role-session-name: auxite-wallet-web-deploy
+
       - name: Sync HTML (short cache)
         run: |
           aws s3 sync "./${{ env.BUILD_DIR }}" "s3://${{ env.S3_BUCKET }}/" \
             --delete --exclude "*" --include "*.html" \
             --cache-control "public, max-age=60" \
             --content-type "text/html"
+
       - name: Sync assets (long cache)
         run: |
           aws s3 sync "./${{ env.BUILD_DIR }}" "s3://${{ env.S3_BUCKET }}/" \
             --exclude "*.html" \
             --cache-control "public, max-age=31536000, immutable"
+
       - name: Invalidate CloudFront
         run: |
           aws cloudfront create-invalidation \
