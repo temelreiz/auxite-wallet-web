@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 # dependencies & builds
+=======
+>>>>>>> cdb579c (chore(repo): cleanup env/artefacts & prototype; add .gitignore)
 node_modules/
 .next/
 out/
@@ -13,6 +16,7 @@ coverage/
 .turbo/
 pnpm-lock.yaml
 
+<<<<<<< HEAD
 # env & OS
 .env
 .env.*
@@ -43,3 +47,9 @@ next-env.d.ts
 .env.*
 !.env.example
 >>>>>>> 7d982bc (chore: ignore .env files)
+=======
+.env
+.env.*
+!.env.example
+.DS_Store
+>>>>>>> cdb579c (chore(repo): cleanup env/artefacts & prototype; add .gitignore)
