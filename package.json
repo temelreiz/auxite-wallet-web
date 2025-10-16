@@ -22,6 +22,7 @@
     "node-fetch": "^3.3.2",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "recharts": "^3.2.1",
     "viem": "2.38.1",
     "wagmi": "2.18.0",
     "web3modal": "^1.9.12",
