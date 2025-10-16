@@ -18,3 +18,28 @@ pnpm-lock.yaml
 .env.*
 !.env.example
 .DS_Store
+<<<<<<< HEAD
+=======
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Environment files
+.env
+.env.*
+!.env.example
+>>>>>>> 7d982bc (chore: ignore .env files)
