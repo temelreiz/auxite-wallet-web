@@ -1,29 +1,28 @@
 'use client';
 
-import { WagmiProvider, createConfig, http } from 'wagmi';
-import { mainnet } from 'wagmi/chains';
+import { ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { RainbowKitProvider, getDefaultConfig, darkTheme } from '@rainbow-me/rainbowkit';
+import { getDefaultConfig, RainbowKitProvider, darkTheme } from '@rainbow-me/rainbowkit';
 import '@rainbow-me/rainbowkit/styles.css';
-import { ReactNode, useState } from 'react';
+import { WagmiProvider } from 'wagmi';
+import { sepolia, mainnet } from 'viem/chains';
 
-const wagmiConfig = createConfig(
-  getDefaultConfig({
-    appName: 'Auxite Wallet',
-    projectId: 'WALLET_CONNECT_PROJECT_ID', // TODO: WC proj id (walletconnect.com)
-    chains: [mainnet],
-    transports: {
-      [mainnet.id]: http()
-    }
-  })
-);
+const projectId = process.env.NEXT_PUBLIC_WC_PROJECT_ID || 'demo';
+
+const config = getDefaultConfig({
+  appName: 'Auxite Wallet',
+  projectId,
+  chains: [sepolia, mainnet],
+  ssr: true,
+});
+
+const queryClient = new QueryClient();
 
 export default function Providers({ children }: { children: ReactNode }) {
-  const [client] = useState(() => new QueryClient());
   return (
-    <WagmiProvider config={wagmiConfig}>
-      <QueryClientProvider client={client}>
-        <RainbowKitProvider theme={darkTheme()} modalSize="compact">
+    <WagmiProvider config={config}>
+      <QueryClientProvider client={queryClient}>
+        <RainbowKitProvider theme={darkTheme({ accentColor: '#2563eb' })}>
           {children}
         </RainbowKitProvider>
       </QueryClientProvider>

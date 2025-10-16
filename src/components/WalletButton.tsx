@@ -3,8 +3,8 @@ import { ConnectButton } from '@rainbow-me/rainbowkit';
 
 export default function WalletButton() {
   return (
-    <div className="flex items-center">
-      <ConnectButton />
+    <div className="flex">
+      <ConnectButton chainStatus="icon" showBalance={true} accountStatus="address" />
     </div>
   );
 }
