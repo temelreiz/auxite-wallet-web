@@ -63,3 +63,12 @@ jobs:
           aws cloudfront create-invalidation \
             --distribution-id ${{ env.CF_DISTRIBUTION_ID }} \
             --paths "/*"
+
+      env:
+      AWS_REGION: eu-central-1
+      S3_BUCKET: wallet.auxite.io
+      CF_DISTRIBUTION_ID: E1USR057THQ6TW
+      BUILD_DIR: out
+      NEXT_PUBLIC_STATIC_EXPORT: "1"
+      NEXT_PUBLIC_API_BASE: "https://api.auxite.io"
+
