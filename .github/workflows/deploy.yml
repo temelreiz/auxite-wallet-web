@@ -6,8 +6,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
+  id-token: write      # OIDC için
   contents: read
+
+concurrency:
+  group: deploy-wallet
+  cancel-in-progress: true
 
 env:
   AWS_REGION: eu-central-1
@@ -19,22 +23,30 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Node 20.19.0
+      - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: "20.19.0"
-          cache: "npm"
+          node-version: '20'
+          cache: 'npm'
 
-      - name: Show versions
+      - name: Print versions
         run: |
           node -v
           npm -v
 
-      - name: Install deps (CI)
+      # Build-time public env değişkenleri (Repo → Settings → Actions → Variables altında tanımlayın)
+      - name: Export build env
+        run: |
+          echo "NEXT_PUBLIC_API_BASE=${{ vars.NEXT_PUBLIC_API_BASE }}" >> $GITHUB_ENV
+          echo "NEXT_PUBLIC_WC_PROJECT_ID=${{ vars.NEXT_PUBLIC_WC_PROJECT_ID }}" >> $GITHUB_ENV
+
+      - name: Install deps (ci)
         run: npm ci
 
+      # Next.js 15 + output: export => yalnızca build yeterli; çıktılar ./out altına gelir
       - name: Build
         run: npm run build
 
@@ -45,17 +57,20 @@ jobs:
           role-to-assume: ${{ secrets.AWS_INFRA_ROLE_ARN }}
           role-session-name: auxite-wallet-web-deploy
 
-      - name: Sync HTML (short cache)
+      # HTML dosyalarını kısa cache ile gönder (content-type zorla)
+      - name: Upload HTML (short cache)
         run: |
           aws s3 sync "./${{ env.BUILD_DIR }}" "s3://${{ env.S3_BUCKET }}/" \
-            --delete --exclude "*" --include "*.html" \
+            --delete \
+            --exclude "*" --include "*.html" --include "*.htm" \
             --cache-control "public, max-age=60" \
             --content-type "text/html"
 
-      - name: Sync assets (long cache)
+      # Diğer tüm varlıkları uzun cache ile gönder (css/js/font/img/_next/** vb.)
+      - name: Upload assets (long cache)
         run: |
           aws s3 sync "./${{ env.BUILD_DIR }}" "s3://${{ env.S3_BUCKET }}/" \
-            --exclude "*.html" \
+            --exclude "*.html" --exclude "*.htm" \
             --cache-control "public, max-age=31536000, immutable"
 
       - name: Invalidate CloudFront
@@ -63,12 +78,3 @@ jobs:
           aws cloudfront create-invalidation \
             --distribution-id ${{ env.CF_DISTRIBUTION_ID }} \
             --paths "/*"
-
-      env:
-      AWS_REGION: eu-central-1
-      S3_BUCKET: wallet.auxite.io
-      CF_DISTRIBUTION_ID: E1USR057THQ6TW
-      BUILD_DIR: out
-      NEXT_PUBLIC_STATIC_EXPORT: "1"
-      NEXT_PUBLIC_API_BASE: "https://api.auxite.io"
-
