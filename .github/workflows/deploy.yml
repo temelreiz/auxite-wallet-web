@@ -26,7 +26,8 @@ jobs:
           node-version: 20
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
 
       - name: Build export
         run: |
@@ -39,18 +40,20 @@ jobs:
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          audience: sts.amazonaws.com
 
       - name: Find bucket by CF alias
         id: detect
         run: |
+          set -euo pipefail
           DIST_ID=$(aws cloudfront list-distributions \
             --query 'DistributionList.Items[?Aliases.Items && contains(Aliases.Items, `wallet.auxite.io`)].Id | [0]' \
             --output text)
           ORIGIN=$(aws cloudfront get-distribution --id "$DIST_ID" \
             --query 'Distribution.DistributionConfig.Origins.Items[0].DomainName' --output text)
           BUCKET=$(echo "$ORIGIN" | sed -E 's/\.s3[.-].*$//')
-          echo "DIST_ID=$DIST_ID" >> $GITHUB_OUTPUT
-          echo "BUCKET=$BUCKET" >> $GITHUB_OUTPUT
+          echo "DIST_ID=$DIST_ID" >> "$GITHUB_OUTPUT"
+          echo "BUCKET=$BUCKET" >> "$GITHUB_OUTPUT"
 
       - name: Sync static
         run: |
@@ -75,11 +78,3 @@ jobs:
 
       - name: Who am I
         run: aws sts get-caller-identity
-
-      - name: Configure AWS (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-        aws-region: ${{ env.AWS_REGION }}
-        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}   # <-- ZORUNLU
-        audience: sts.amazonaws.com
-
