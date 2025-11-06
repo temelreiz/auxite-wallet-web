@@ -1,80 +1,148 @@
-name: Deploy wallet.auxite.io
+name: Deploy Auxite (Watcher + Wallet)
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
-permissions:
-  id-token: write      # OIDC için
-  contents: read
-
-concurrency:
-  group: deploy-wallet
-  cancel-in-progress: true
-
 env:
   AWS_REGION: eu-central-1
-  S3_BUCKET: wallet.auxite.io
-  CF_DISTRIBUTION_ID: E1USR057THQ6TW
-  BUILD_DIR: out
+  AWS_ACCOUNT_ID: 809278147371
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
-  build-and-deploy:
+  watcher:
+    name: Deploy Watcher (ECS)
     runs-on: ubuntu-latest
+    env:
+      REPO: auxite-watcher
+      CLUSTER: auxite2-cluster
+      SERVICE: auxite-watcher-service-jj992ugc
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Print versions
-        run: |
-          node -v
-          npm -v
-
-      # Build-time public env değişkenleri (Repo → Settings → Actions → Variables altında tanımlayın)
-      - name: Export build env
-        run: |
-          echo "NEXT_PUBLIC_API_BASE=${{ vars.NEXT_PUBLIC_API_BASE }}" >> $GITHUB_ENV
-          echo "NEXT_PUBLIC_WC_PROJECT_ID=${{ vars.NEXT_PUBLIC_WC_PROJECT_ID }}" >> $GITHUB_ENV
-
-      - name: Install deps (ci)
-        run: npm ci
-
-      # Next.js 15 + output: export => yalnızca build yeterli; çıktılar ./out altına gelir
-      - name: Build
-        run: npm run build
+      - uses: actions/checkout@v4
 
       - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: ${{ secrets.AWS_INFRA_ROLE_ARN }}
-          role-session-name: auxite-wallet-web-deploy
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }} # OIDC assume role
 
-      # HTML dosyalarını kısa cache ile gönder (content-type zorla)
-      - name: Upload HTML (short cache)
+      - name: Docker login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ env.AWS_ACCOUNT_ID }}
+
+      - name: Build & Push image
+        id: build
         run: |
-          aws s3 sync "./${{ env.BUILD_DIR }}" "s3://${{ env.S3_BUCKET }}/" \
-            --delete \
-            --exclude "*" --include "*.html" --include "*.htm" \
-            --cache-control "public, max-age=60" \
-            --content-type "text/html"
+          IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO}"
+          TAG="$(date +%Y%m%d-%H%M%S)"
+          echo "IMAGE=$IMAGE" >> $GITHUB_OUTPUT
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          docker build -t "$IMAGE:$TAG" .
+          docker push "$IMAGE:$TAG"
 
-      # Diğer tüm varlıkları uzun cache ile gönder (css/js/font/img/_next/** vb.)
-      - name: Upload assets (long cache)
+      - name: Prepare new Task Definition JSON
         run: |
-          aws s3 sync "./${{ env.BUILD_DIR }}" "s3://${{ env.S3_BUCKET }}/" \
-            --exclude "*.html" --exclude "*.htm" \
-            --cache-control "public, max-age=31536000, immutable"
+          TD_ARN=$(aws ecs describe-services \
+            --cluster "${CLUSTER}" --services "${SERVICE}" --region "${AWS_REGION}" \
+            --query 'services[0].taskDefinition' --output text)
+          aws ecs describe-task-definition \
+            --task-definition "$TD_ARN" --region "${AWS_REGION}" \
+            --query 'taskDefinition' > td.describe.json
 
-      - name: Invalidate CloudFront
+          IMAGE="${{ steps.build.outputs.IMAGE }}"
+          TAG="${{ steps.build.outputs.TAG }}"
+
+          jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)
+              | .requiresCompatibilities=["FARGATE"]
+              | .networkMode="awsvpc"
+              | .containerDefinitions[0].image = (env.IMAGE + ":" + env.TAG)
+              | .pidMode? |= empty
+              | .ipcMode? |= empty
+              | .proxyConfiguration? |= empty
+              | .inferenceAccelerators? |= empty
+              | .ephemeralStorage? |= empty' td.describe.json > td.register.json
+
+      - name: Register TD & Update Service
+        run: |
+          NEW_TD_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://td.register.json \
+            --region "${AWS_REGION}" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "NEW_TD_ARN=$NEW_TD_ARN"
+          aws ecs update-service \
+            --cluster "${CLUSTER}" \
+            --service "${SERVICE}" \
+            --task-definition "$NEW_TD_ARN" \
+            --force-new-deployment \
+            --region "${AWS_REGION}"
+
+  wallet:
+    name: Deploy Wallet (S3 + CloudFront)
+    runs-on: ubuntu-latest
+    needs: watcher
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (Next export)
+        run: |
+          rm -rf .next out
+          pnpm build
+          test -d out || { echo "out/ oluşmadı"; exit 1; }
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: eu-central-1
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+
+      - name: Detect bucket by CloudFront alias
+        id: detect
+        run: |
+          DIST_ID=$(aws cloudfront list-distributions \
+            --query 'DistributionList.Items[?Aliases.Items && contains(Aliases.Items, `wallet.auxite.io`)].Id | [0]' \
+            --output text)
+          ORIGIN=$(aws cloudfront get-distribution --id "$DIST_ID" \
+            --query 'Distribution.DistributionConfig.Origins.Items[0].DomainName' --output text)
+          BUCKET=$(echo "$ORIGIN" | sed -E 's/\.s3[.-].*$//')
+          echo "DIST_ID=$DIST_ID" >> $GITHUB_OUTPUT
+          echo "BUCKET=$BUCKET" >> $GITHUB_OUTPUT
+
+      - name: Sync static
+        run: |
+          aws s3 sync ./out "s3://${{ steps.detect.outputs.BUCKET }}" \
+            --delete --region eu-central-1 \
+            --cache-control "public,max-age=31536000,immutable" \
+            --exclude "*.html" --exclude "index.txt"
+
+      - name: Sync html
+        run: |
+          aws s3 sync ./out "s3://${{ steps.detect.outputs.BUCKET }}" \
+            --delete --region eu-central-1 \
+            --content-type "text/html; charset=utf-8" \
+            --cache-control "public,max-age=60" \
+            --exclude "*" --include "*.html"
+
+      - name: Invalidate CF
         run: |
           aws cloudfront create-invalidation \
-            --distribution-id ${{ env.CF_DISTRIBUTION_ID }} \
-            --paths "/*"
+            --distribution-id "${{ steps.detect.outputs.DIST_ID }}" \
+            --paths "/*" >/dev/null
