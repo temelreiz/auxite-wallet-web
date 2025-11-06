@@ -1,120 +1,46 @@
-name: Deploy Auxite (Watcher + Wallet)
+name: Deploy Wallet (S3+CF)
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  AWS_REGION: eu-central-1
-  AWS_ACCOUNT_ID: 809278147371
-
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  watcher:
-    name: Deploy Watcher (ECS)
+  deploy:
     runs-on: ubuntu-latest
     env:
-      REPO: auxite-watcher
-      CLUSTER: auxite2-cluster
-      SERVICE: auxite-watcher-service-jj992ugc
+      AWS_REGION: eu-central-1
     steps:
       - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build export
+        run: |
+          rm -rf .next out
+          pnpm build
+          test -d out || { echo "out yok"; exit 1; }
 
       - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }} # OIDC assume role
-
-      - name: Docker login to ECR
-        uses: aws-actions/amazon-ecr-login@v2
-        with:
-          registries: ${{ env.AWS_ACCOUNT_ID }}
-
-      - name: Build & Push image
-        id: build
-        run: |
-          IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO}"
-          TAG="$(date +%Y%m%d-%H%M%S)"
-          echo "IMAGE=$IMAGE" >> $GITHUB_OUTPUT
-          echo "TAG=$TAG" >> $GITHUB_OUTPUT
-          docker build -t "$IMAGE:$TAG" .
-          docker push "$IMAGE:$TAG"
-
-      - name: Prepare new Task Definition JSON
-        run: |
-          TD_ARN=$(aws ecs describe-services \
-            --cluster "${CLUSTER}" --services "${SERVICE}" --region "${AWS_REGION}" \
-            --query 'services[0].taskDefinition' --output text)
-          aws ecs describe-task-definition \
-            --task-definition "$TD_ARN" --region "${AWS_REGION}" \
-            --query 'taskDefinition' > td.describe.json
-
-          IMAGE="${{ steps.build.outputs.IMAGE }}"
-          TAG="${{ steps.build.outputs.TAG }}"
-
-          jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)
-              | .requiresCompatibilities=["FARGATE"]
-              | .networkMode="awsvpc"
-              | .containerDefinitions[0].image = (env.IMAGE + ":" + env.TAG)
-              | .pidMode? |= empty
-              | .ipcMode? |= empty
-              | .proxyConfiguration? |= empty
-              | .inferenceAccelerators? |= empty
-              | .ephemeralStorage? |= empty' td.describe.json > td.register.json
-
-      - name: Register TD & Update Service
-        run: |
-          NEW_TD_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://td.register.json \
-            --region "${AWS_REGION}" \
-            --query 'taskDefinition.taskDefinitionArn' --output text)
-          echo "NEW_TD_ARN=$NEW_TD_ARN"
-          aws ecs update-service \
-            --cluster "${CLUSTER}" \
-            --service "${SERVICE}" \
-            --task-definition "$NEW_TD_ARN" \
-            --force-new-deployment \
-            --region "${AWS_REGION}"
-
-  wallet:
-    name: Deploy Wallet (S3 + CloudFront)
-    runs-on: ubuntu-latest
-    needs: watcher
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup PNPM
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - name: Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-
-      - name: Install deps
-        run: pnpm install --frozen-lockfile
-
-      - name: Build (Next export)
-        run: |
-          rm -rf .next out
-          pnpm build
-          test -d out || { echo "out/ oluşmadı"; exit 1; }
-
-      - name: Configure AWS (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: eu-central-1
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
 
-      - name: Detect bucket by CloudFront alias
+      - name: Find bucket by CF alias
         id: detect
         run: |
           DIST_ID=$(aws cloudfront list-distributions \
@@ -141,8 +67,11 @@ jobs:
             --cache-control "public,max-age=60" \
             --exclude "*" --include "*.html"
 
-      - name: Invalidate CF
+      - name: Invalidate
         run: |
           aws cloudfront create-invalidation \
             --distribution-id "${{ steps.detect.outputs.DIST_ID }}" \
             --paths "/*" >/dev/null
+
+      - name: Who am I
+        run: aws sts get-caller-identity
