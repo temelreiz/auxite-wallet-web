@@ -15,31 +15,31 @@ jobs:
     env:
       AWS_REGION: eu-central-1
     steps:
+      # 1️⃣ Kod checkout
       - uses: actions/checkout@v4
 
+      # 2️⃣ PNPM ve Node kurulumu
       - uses: pnpm/action-setup@v4
         with:
           version: 9
 
-      
-      
       - uses: actions/setup-node@v4
         with:
-        node-version: 20
-    
+          node-version: 20
+          # cache: pnpm   # ❌ kaldırıldı (lock dosyası yoksa hata veriyordu)
 
-- name: Install deps
-  run: pnpm install --no-frozen-lockfile
+      # 3️⃣ Bağımlılık kurulumu
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
 
-      - name: Install deps
-        run: pnpm install --frozen-lockfile
-
+      # 4️⃣ Next.js statik export (S3 için)
       - name: Build export
         run: |
           rm -rf .next out
           pnpm build
-          test -d out || { echo "out yok"; exit 1; }
+          test -d out || { echo "out klasörü oluşmadı!"; exit 1; }
 
+      # 5️⃣ AWS kimlik doğrulama (OIDC)
       - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -47,6 +47,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           audience: sts.amazonaws.com
 
+      # 6️⃣ CloudFront dağıtımına göre bucket bulma
       - name: Find bucket by CF alias
         id: detect
         run: |
@@ -60,14 +61,16 @@ jobs:
           echo "DIST_ID=$DIST_ID" >> "$GITHUB_OUTPUT"
           echo "BUCKET=$BUCKET" >> "$GITHUB_OUTPUT"
 
-      - name: Sync static
+      # 7️⃣ Static dosyaları S3'e yükle (cache uzun)
+      - name: Sync static assets
         run: |
           aws s3 sync ./out "s3://${{ steps.detect.outputs.BUCKET }}" \
             --delete --region eu-central-1 \
             --cache-control "public,max-age=31536000,immutable" \
             --exclude "*.html" --exclude "index.txt"
 
-      - name: Sync html
+      # 8️⃣ HTML dosyalarını yükle (kısa cache)
+      - name: Sync HTML files
         run: |
           aws s3 sync ./out "s3://${{ steps.detect.outputs.BUCKET }}" \
             --delete --region eu-central-1 \
@@ -75,11 +78,13 @@ jobs:
             --cache-control "public,max-age=60" \
             --exclude "*" --include "*.html"
 
-      - name: Invalidate
+      # 9️⃣ CloudFront cache invalidation
+      - name: Invalidate CloudFront cache
         run: |
           aws cloudfront create-invalidation \
             --distribution-id "${{ steps.detect.outputs.DIST_ID }}" \
             --paths "/*" >/dev/null
 
+      # 🔟 Test amaçlı kimlik doğrulama çıktısı
       - name: Who am I
         run: aws sts get-caller-identity
